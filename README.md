@@ -22,13 +22,18 @@ assembly with sane defaults.
 
 ## Packages
 
-- `node` (v0): `Config` + `New(cfg)` assembling a `raft.Raft` with an
-  in-memory backend (log, stable, snapshots, transport); `Apply`, `IsLeader`,
+- `node`: `Config` + `New(cfg)` assembling a `raft.Raft`; `Apply`, `IsLeader`,
   `Leader`, `Shutdown`; the unwrapped `*raft.Raft` (`Node.Raft`) and the
-  in-memory transport (`Node.Transport`, for connecting test peers) stay
-  reachable.
-- Planned: durable log/stable/snapshot stores, a network transport,
-  multi-node membership helpers, an admin surface.
+  transport (`Node.Transport`, a `raft.Transport`) stay reachable. Two
+  independent choices:
+  - storage: `InMemory`, or `DataDir` for a durable bbolt log + stable store
+    (`rqlite/raft-boltdb/v2`, `raft.db`) and `raft.NewFileSnapshotStore`;
+    `Bootstrap` is a no-op on an existing state, so a restart replays the log;
+  - transport: in-memory by default, TCP (`raft.NewTCPTransportWithConfig`)
+    when `BindAddr` is set, wrapped in TLS (a `raft.StreamLayer` over
+    `crypto/tls`) when `TLS` is also set. Membership uses
+    `Node.Raft.AddVoter` directly; the tests replicate across three nodes.
+- Planned: multi-node membership helpers, an admin surface.
 
 ## CGO
 
