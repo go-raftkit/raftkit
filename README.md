@@ -24,7 +24,9 @@ assembly with sane defaults.
 
 - `node` (v0): `Config` + `New(cfg)` assembling a `raft.Raft` with an
   in-memory backend (log, stable, snapshots, transport); `Apply`, `IsLeader`,
-  `Leader`, `Shutdown`; the unwrapped `*raft.Raft` stays reachable.
+  `Leader`, `Shutdown`; the unwrapped `*raft.Raft` (`Node.Raft`) and the
+  in-memory transport (`Node.Transport`, for connecting test peers) stay
+  reachable.
 - Planned: durable log/stable/snapshot stores, a network transport,
   multi-node membership helpers, an admin surface.
 
@@ -36,7 +38,9 @@ Go race detector itself needs cgo, so only the `-race` CI step enables it.)
 ## Development
 
 ```
-go vet ./... && gofmt -l . && go test -race ./...
+go vet ./...
+test -z "$(gofmt -l .)"
+CGO_ENABLED=1 go test -race ./...
 ```
 
 Go version pinned to 1.27.4 in `go.mod` and CI.

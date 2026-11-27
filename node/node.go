@@ -68,11 +68,13 @@ func New(cfg Config) (*Node, error) {
 			Servers: []raft.Server{{Suffrage: raft.Voter, ID: rc.LocalID, Address: trans.LocalAddr()}},
 		})
 		if err != nil {
+			trans.Close()
 			return nil, fmt.Errorf("node: bootstrap: %w", err)
 		}
 	}
 	r, err := raft.NewRaft(rc, cfg.FSM, store, store, snaps, trans)
 	if err != nil {
+		trans.Close()
 		return nil, fmt.Errorf("node: new raft: %w", err)
 	}
 	return &Node{Raft: r, Transport: trans}, nil
@@ -91,11 +93,18 @@ func (n *Node) Apply(cmd []byte, timeout time.Duration) (any, error) {
 // IsLeader reports whether this node currently believes it is the leader.
 func (n *Node) IsLeader() bool { return n.Raft.State() == raft.Leader }
 
-// Leader returns the address of the current leader, or "" if unknown.
-func (n *Node) Leader() string {
-	a, _ := n.Raft.LeaderWithID()
-	return string(a)
+// Leader returns the address and server ID of the current leader, both ""
+// if unknown.
+func (n *Node) Leader() (addr, id string) {
+	a, i := n.Raft.LeaderWithID()
+	return string(a), string(i)
 }
 
-// Shutdown stops raft and waits for it to finish.
-func (n *Node) Shutdown() error { return n.Raft.Shutdown().Error() }
+// Shutdown stops raft, waits for it to finish, then closes the transport.
+func (n *Node) Shutdown() error {
+	err := n.Raft.Shutdown().Error()
+	if cerr := n.Transport.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}

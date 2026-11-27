@@ -32,21 +32,28 @@ func (nopSnap) Release()                          {}
 
 func TestSingleNodeApply(t *testing.T) {
 	fsm := &logFSM{}
-	n, err := node.New(node.Config{ID: "n1", FSM: fsm, InMemory: true, Bootstrap: true})
+	notify := make(chan bool, 4)
+	rc := raft.DefaultConfig()
+	rc.NotifyCh = notify
+	n, err := node.New(node.Config{ID: "n1", FSM: fsm, InMemory: true, Bootstrap: true, Raft: rc})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer n.Shutdown()
 
-	deadline := time.Now().Add(10 * time.Second)
-	for !n.IsLeader() {
-		if time.Now().After(deadline) {
-			t.Fatal("no leadership within 10s")
+	select {
+	case leader := <-notify:
+		if !leader {
+			t.Fatal("notified of leadership loss, want gain")
 		}
-		time.Sleep(20 * time.Millisecond)
+	case <-time.After(10 * time.Second):
+		t.Fatal("no leadership within 10s")
 	}
-	if n.Leader() != "n1" {
-		t.Fatalf("Leader() = %q, want n1", n.Leader())
+	if !n.IsLeader() {
+		t.Fatal("IsLeader() = false after notification")
+	}
+	if addr, id := n.Leader(); addr != "n1" || id != "n1" {
+		t.Fatalf("Leader() = (%q, %q), want (n1, n1)", addr, id)
 	}
 	resp, err := n.Apply([]byte("hello"), 5*time.Second)
 	if err != nil {
