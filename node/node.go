@@ -135,17 +135,8 @@ func New(cfg Config) (*Node, error) {
 	}
 
 	if cfg.Bootstrap {
-		has, err := raft.HasExistingState(logs, stab, snaps)
-		if err != nil {
-			return fail(fmt.Errorf("node: inspect state: %w", err))
-		}
-		if !has {
-			err := raft.BootstrapCluster(rc, logs, stab, snaps, trans, raft.Configuration{
-				Servers: []raft.Server{{Suffrage: raft.Voter, ID: rc.LocalID, Address: trans.LocalAddr()}},
-			})
-			if err != nil {
-				return fail(fmt.Errorf("node: bootstrap: %w", err))
-			}
+		if err := bootstrapIfFresh(rc, logs, stab, snaps, trans); err != nil {
+			return fail(err)
 		}
 	}
 	r, err := raft.NewRaft(rc, cfg.FSM, logs, stab, snaps, trans)
@@ -154,6 +145,25 @@ func New(cfg Config) (*Node, error) {
 	}
 	n.Raft = r
 	return n, nil
+}
+
+// bootstrapIfFresh makes this node a single-voter cluster unless the stores
+// already hold raft state (a restart).
+func bootstrapIfFresh(rc *raft.Config, logs raft.LogStore, stab raft.StableStore, snaps raft.SnapshotStore, trans raft.Transport) error {
+	has, err := raft.HasExistingState(logs, stab, snaps)
+	if err != nil {
+		return fmt.Errorf("node: inspect state: %w", err)
+	}
+	if has {
+		return nil
+	}
+	err = raft.BootstrapCluster(rc, logs, stab, snaps, trans, raft.Configuration{
+		Servers: []raft.Server{{Suffrage: raft.Voter, ID: rc.LocalID, Address: trans.LocalAddr()}},
+	})
+	if err != nil {
+		return fmt.Errorf("node: bootstrap: %w", err)
+	}
+	return nil
 }
 
 // newTransport builds the in-memory, TCP or TCP+TLS transport.

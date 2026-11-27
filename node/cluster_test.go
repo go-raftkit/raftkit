@@ -10,7 +10,9 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -200,5 +202,70 @@ func TestNewValidationBackends(t *testing.T) {
 		if _, err := node.New(c); err == nil {
 			t.Errorf("%s: want error", name)
 		}
+	}
+}
+
+// TestNewFailures pins every refusal on the assembly path: each must surface
+// as an error, not a half-built node.
+func TestNewFailures(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	busy := occupied.Addr().String()
+
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	boltIsDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(boltIsDir, "raft.db"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	snapIsFile := t.TempDir()
+	if err := os.WriteFile(filepath.Join(snapIsFile, "snapshots"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bad := raft.DefaultConfig()
+	bad.HeartbeatTimeout = time.Nanosecond // fails raft.ValidateConfig
+
+	for _, tc := range []struct {
+		name, want string
+		cfg        node.Config
+	}{
+		{"data dir is a file", "data dir", node.Config{DataDir: filepath.Join(file, "x")}},
+		{"raft.db is a directory", "bolt store", node.Config{DataDir: boltIsDir}},
+		{"snapshots is a file", "snapshot store", node.Config{DataDir: snapIsFile}},
+		{"bind address busy", "tcp transport", node.Config{InMemory: true, BindAddr: busy}},
+		{"tls bind address busy", "tls listen", node.Config{InMemory: true, BindAddr: busy, TLS: mutualTLS(t)}},
+		{"tls unadvertisable bind", "not advertisable", node.Config{InMemory: true, BindAddr: "0.0.0.0:0", TLS: mutualTLS(t)}},
+		{"bad advertise address", "advertise address", node.Config{InMemory: true, BindAddr: "127.0.0.1:0", Address: "no port"}},
+		{"bootstrap bad config", "bootstrap", node.Config{InMemory: true, Bootstrap: true, Raft: bad}},
+		{"new raft bad config", "new raft", node.Config{InMemory: true, Raft: bad}},
+	} {
+		c := tc.cfg
+		c.ID, c.FSM = "a", newSigFSM()
+		n, err := node.New(c)
+		if err == nil {
+			t.Errorf("%s: want error", tc.name)
+			continue // a half-built node must not be shut down
+		}
+		if n != nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got (%v, %v), want nil node and %q", tc.name, n, err, tc.want)
+		}
+	}
+}
+
+// TestTLSAdvertise checks that Address overrides the bound address.
+func TestTLSAdvertise(t *testing.T) {
+	n, err := node.New(node.Config{ID: "a", FSM: newSigFSM(), InMemory: true,
+		BindAddr: "127.0.0.1:0", Address: "127.0.0.1:1", TLS: mutualTLS(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.Shutdown()
+	if got := n.Transport.LocalAddr(); got != "127.0.0.1:1" {
+		t.Fatalf("LocalAddr = %q, want 127.0.0.1:1", got)
 	}
 }
