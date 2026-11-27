@@ -39,7 +39,9 @@ assembly with sane defaults.
 
 Membership is plain hashicorp/raft through `Node.Raft`; raftkit adds no
 forwarding methods. Only the leader may change the configuration, so a caller
-that is not the leader redirects to `n.Leader()` (address, ID).
+that is not the leader gets `raft.ErrNotLeader` and redirects to
+`n.Leader()` (address, ID). The `timeout` argument of `AddVoter`/`RemoveServer`
+bounds the time to append the change to the log, not the whole operation.
 
 ```go
 // Join: start the new node WITHOUT Bootstrap (empty config, own DataDir),
@@ -47,7 +49,7 @@ that is not the leader redirects to `n.Leader()` (address, ID).
 err := leader.Raft.AddVoter(raft.ServerID("d"), joiner.Transport.LocalAddr(), 0, 10*time.Second).Error()
 
 // Leave:
-err = leader.Raft.RemoveServer("c", 0, 10*time.Second).Error()
+err = leader.Raft.RemoveServer(raft.ServerID("c"), 0, 10*time.Second).Error()
 
 // Inspect the committed configuration:
 f := leader.Raft.GetConfiguration(); err = f.Error(); servers := f.Configuration().Servers

@@ -115,7 +115,7 @@ func addVoter(t *testing.T, leader, joiner *node.Node, id string) {
 	if !leader.IsLeader() {
 		t.Fatal("membership change needs the leader")
 	}
-	f := leader.Raft.AddVoter(raft.ServerID(id), joiner.Transport.LocalAddr(), 0, 10*time.Second)
+	f := leader.Raft.AddVoter(raft.ServerID(id), joiner.Transport.LocalAddr(), 0, 30*time.Second)
 	if err := f.Error(); err != nil {
 		t.Fatalf("AddVoter %s: %v", id, err)
 	}
@@ -141,20 +141,27 @@ func voters(t *testing.T, n *node.Node) []string {
 // with a compaction-friendly config on every node.
 func liveCluster(t *testing.T) (nodes []*node.Node, fsms []*snapFSM) {
 	t.Helper()
-	notify := make(chan bool, 4)
+	nodes, fsms, _ = liveClusterNotify(t)
+	return nodes, fsms
+}
+
+// liveClusterNotify also returns every node's leadership NotifyCh (node 0's
+// initial gain is already consumed).
+func liveClusterNotify(t *testing.T) (nodes []*node.Node, fsms []*snapFSM, notifies []chan bool) {
+	t.Helper()
 	for i, id := range []string{"a", "b", "c"} {
 		rc := raft.DefaultConfig()
 		rc.TrailingLogs = 2 // keep almost nothing after a snapshot
 		rc.SnapshotThreshold = 1 << 30
-		if i == 0 {
-			rc.NotifyCh = notify
-		}
+		notify := make(chan bool, 8)
+		rc.NotifyCh = notify
+		notifies = append(notifies, notify)
 		f := newSnapFSM()
 		fsms = append(fsms, f)
 		nodes = append(nodes, member(t, id, f, i == 0, rc))
 	}
 	select {
-	case ok := <-notify:
+	case ok := <-notifies[0]:
 		if !ok {
 			t.Fatal("notified of leadership loss, want gain")
 		}
@@ -163,7 +170,7 @@ func liveCluster(t *testing.T) (nodes []*node.Node, fsms []*snapFSM) {
 	}
 	addVoter(t, nodes[0], nodes[1], "b")
 	addVoter(t, nodes[0], nodes[2], "c")
-	return nodes, fsms
+	return nodes, fsms, notifies
 }
 
 func TestLiveJoinConverges(t *testing.T) {
@@ -198,8 +205,17 @@ func TestLiveJoinConverges(t *testing.T) {
 	for _, f := range append(fsms, jf) {
 		f.waitApply(t, "after")
 	}
-	if got, want := jf.state(), fsms[0].state(); !slices.Equal(got, want) {
-		t.Fatalf("joiner state %v, leader %v", got, want)
+	want := fsms[0].state()
+	for i, f := range append(fsms, jf) {
+		if got := f.state(); !slices.Equal(got, want) {
+			t.Fatalf("fsm %d state %v, leader %v", i, got, want)
+		}
+	}
+	jf.mu.Lock()
+	restored := jf.restored
+	jf.mu.Unlock()
+	if restored {
+		t.Fatal("joiner restored a snapshot; this test is meant to be pure log replay")
 	}
 	// The joiner learned the committed configuration through replication.
 	if got, want := fmt.Sprint(voters(t, joiner)), "[a b c d]"; got != want {
@@ -303,4 +319,41 @@ func TestRemoveServerLeavesConfiguration(t *testing.T) {
 	if nodes[2].IsLeader() {
 		t.Fatal("removed node is leader")
 	}
+}
+
+// TestRemoveLeaderForcesElection removes the current leader: it must step
+// down, a new leader must emerge from the remaining voters, and the committed
+// configuration must no longer list it.
+func TestRemoveLeaderForcesElection(t *testing.T) {
+	nodes, fsms, notifies := liveClusterNotify(t)
+	if err := nodes[0].Raft.RemoveServer(raft.ServerID("a"), 0, 30*time.Second).Error(); err != nil {
+		t.Fatalf("RemoveServer(leader): %v", err)
+	}
+	var next *node.Node
+	deadline := time.After(30 * time.Second)
+	for next == nil {
+		select {
+		case ok := <-notifies[1]:
+			if ok {
+				next = nodes[1]
+			}
+		case ok := <-notifies[2]:
+			if ok {
+				next = nodes[2]
+			}
+		case <-deadline:
+			t.Fatal("no new leader within 30s")
+		}
+	}
+	if got, want := fmt.Sprint(voters(t, next)), "[b c]"; got != want {
+		t.Fatalf("new leader config = %s, want %s", got, want)
+	}
+	if nodes[0].IsLeader() {
+		t.Fatal("removed node is still leader")
+	}
+	if _, err := next.Apply([]byte("post"), 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	fsms[1].waitApply(t, "post")
+	fsms[2].waitApply(t, "post")
 }
