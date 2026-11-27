@@ -35,6 +35,34 @@ assembly with sane defaults.
     `Node.Raft.AddVoter` directly; the tests replicate across three nodes.
 - Planned: multi-node membership helpers, an admin surface.
 
+## Membership
+
+Membership is plain hashicorp/raft through `Node.Raft`; raftkit adds no
+forwarding methods. Only the leader may change the configuration, so a caller
+that is not the leader gets `raft.ErrNotLeader` and redirects to
+`n.Leader()` (address, ID). The `timeout` argument of `AddVoter`/`RemoveServer`
+bounds the time to append the change to the log, not the whole operation.
+
+```go
+// Join: start the new node WITHOUT Bootstrap (empty config, own DataDir),
+// then on the leader:
+err := leader.Raft.AddVoter(raft.ServerID("d"), joiner.Transport.LocalAddr(), 0, 10*time.Second).Error()
+
+// Leave:
+err = leader.Raft.RemoveServer(raft.ServerID("c"), 0, 10*time.Second).Error()
+
+// Inspect the committed configuration:
+f := leader.Raft.GetConfiguration(); err = f.Error(); servers := f.Configuration().Servers
+```
+
+A joiner catches up from the leader: by log replay while the log still holds
+its history, otherwise by InstallSnapshot, which calls your `FSM.Restore`. So
+`FSM.Snapshot`/`Restore` must round-trip the whole state. The tests
+`TestLiveJoinConverges`, `TestJoinCatchesUpViaInstallSnapshot` (log compacted
+with `Raft.Snapshot()` and a small `TrailingLogs`; the joiner holds state its
+`Apply` never saw) and `TestRemoveServerLeavesConfiguration` prove this on a
+live durable TCP cluster.
+
 ## CGO
 
 `CGO_ENABLED=0`: the library and its tests build and run without cgo. (The
