@@ -269,3 +269,31 @@ func TestTLSAdvertise(t *testing.T) {
 		t.Fatalf("LocalAddr = %q, want 127.0.0.1:1", got)
 	}
 }
+
+// TestSecondNodeOnLiveDataDirFails: bbolt's file lock must produce an error,
+// not an indefinite hang, when a live node already owns the directory.
+func TestSecondNodeOnLiveDataDirFails(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "raft")
+	n, err := node.New(node.Config{ID: "a", FSM: newSigFSM(), DataDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.Shutdown()
+
+	done := make(chan error, 1)
+	go func() {
+		n2, err := node.New(node.Config{ID: "b", FSM: newSigFSM(), DataDir: dir})
+		if err == nil {
+			n2.Shutdown()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("second New on a live DataDir succeeded")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("second New on a live DataDir hung")
+	}
+}

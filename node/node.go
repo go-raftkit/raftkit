@@ -18,7 +18,8 @@ import (
 	"path/filepath"
 	"time"
 
-	raftboltdb "github.com/rqlite/raft-boltdb/v2"
+	raftboltdb "github.com/hashicorp/raft-boltdb/v2"
+	"go.etcd.io/bbolt"
 
 	"github.com/hashicorp/raft"
 )
@@ -72,6 +73,9 @@ const (
 	snapshotsRetained = 2
 	tcpMaxPool        = 3
 	tcpTimeout        = 10 * time.Second
+	// boltOpenTimeout bounds the file-lock wait so a second New on a live
+	// DataDir fails instead of hanging.
+	boltOpenTimeout = 3 * time.Second
 )
 
 // New validates cfg, assembles the stores and transport, and starts raft.
@@ -113,7 +117,10 @@ func New(cfg Config) (*Node, error) {
 		if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 			return fail(fmt.Errorf("node: data dir: %w", err))
 		}
-		b, err := raftboltdb.NewBoltStore(filepath.Join(cfg.DataDir, "raft.db"))
+		b, err := raftboltdb.New(raftboltdb.Options{
+			Path:        filepath.Join(cfg.DataDir, "raft.db"),
+			BoltOptions: &bbolt.Options{Timeout: boltOpenTimeout},
+		})
 		if err != nil {
 			return fail(fmt.Errorf("node: bolt store: %w", err))
 		}
@@ -206,14 +213,12 @@ func newTransport(cfg Config) (raft.Transport, error) {
 }
 
 func (n *Node) close() error {
-	var err error
+	var errs []error
 	for i := len(n.closers) - 1; i >= 0; i-- {
-		if cerr := n.closers[i].Close(); err == nil {
-			err = cerr
-		}
+		errs = append(errs, n.closers[i].Close())
 	}
 	n.closers = nil
-	return err
+	return errors.Join(errs...)
 }
 
 // Apply proposes cmd to the replicated log and waits for it to be applied
